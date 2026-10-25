@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>轻搜</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#202124; --muted:#5f6368; --line:#e8eaed;
+    --accent:#1a73e8; --card:#f1f3f4; --btn-fg:#ffffff;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#202124; --fg:#e8eaed; --muted:#9aa0a6; --line:#3c4043;
+      --accent:#8ab4f8; --card:#2d2e30; --btn-fg:#202124;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  header{
+    display:flex;flex-direction:column;align-items:center;gap:22px;
+    padding:56px 20px 0;
+  }
+  .logo{font-size:30px;font-weight:600;letter-spacing:1px;user-select:none}
+  .logo em{font-style:normal;color:var(--accent)}
+  .searchbar{
+    display:flex;align-items:center;gap:10px;width:100%;max-width:680px;
+    border:1px solid var(--line);border-radius:999px;padding:10px 10px 10px 20px;
+    background:var(--card);transition:border-color .2s, box-shadow .2s, background .2s;
+  }
+  .searchbar:focus-within{
+    border-color:var(--accent);background:var(--bg);
+    box-shadow:0 1px 8px rgba(26,115,232,.18);
+  }
+  .searchbar svg{flex:none;opacity:.55}
+  .searchbar input{
+    flex:1;min-width:0;border:none;outline:none;background:transparent;
+    font-size:16px;color:var(--fg);font-family:inherit;
+  }
+  .searchbar button{
+    flex:none;border:none;border-radius:999px;padding:9px 22px;
+    background:var(--accent);color:var(--btn-fg);font-size:14px;font-family:inherit;
+    cursor:pointer;transition:opacity .15s;
+  }
+  .searchbar button:hover{opacity:.88}
+  main{max-width:680px;margin:0 auto;padding:30px 20px 80px}
+  .stat{font-size:13px;color:var(--muted);margin:0 0 8px;min-height:16px}
+  .result{
+    display:block;text-decoration:none;color:inherit;
+    padding:16px 0;border-bottom:1px solid var(--line);
+  }
+  .result:last-child{border-bottom:none}
+  .result:hover .title{text-decoration:underline}
+  .title{font-size:18px;line-height:1.35;color:var(--accent);font-weight:500;margin-bottom:5px}
+  .url{font-size:12px;color:var(--muted);margin-bottom:6px;word-break:break-all}
+  .desc{font-size:14px;line-height:1.7;color:var(--fg);opacity:.85}
+  .sk{padding:16px 0;border-bottom:1px solid var(--line)}
+  .sk i{
+    display:block;height:12px;border-radius:6px;background:var(--line);
+    margin-bottom:10px;animation:pulse 1.3s ease-in-out infinite;
+  }
+  .sk i:nth-child(1){width:62%;height:16px}
+  .sk i:nth-child(2){width:92%}
+  .sk i:nth-child(3){width:74%;margin-bottom:0}
+  @keyframes pulse{0%,100%{opacity:.45}50%{opacity:1}}
+  .empty{color:var(--muted);font-size:14px;line-height:1.8;padding:24px 0}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">轻<em>搜</em></div>
+  <form class="searchbar" id="form" autocomplete="off">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path>
+    </svg>
+    <input id="q" type="search" placeholder="搜索网页、知识、书籍…" aria-label="搜索">
+    <button type="submit">搜索</button>
+  </form>
+</header>
+
+<main>
+  <p class="stat" id="stat"></p>
+  <div id="results"></div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  const PROXIES = [
+    (u) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
+    (u) => "https://corsproxy.io/?url=" + encodeURIComponent(u),
+    (u) => "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(u)
+  ];
+
+  const $ = (s) => document.querySelector(s);
+  const resultsEl = $("#results");
+  const statEl = $("#stat");
+  const inputEl = $("#q");
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  function strip(s) {
+    const d = document.createElement("div");
+    d.innerHTML = s || "";
+    return (d.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  function fetchText(url, ms) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms || 10000);
+    return fetch(url, { signal: ctrl.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.text();
+      })
+      .finally(() => clearTimeout(timer));
+  }
+
+  function fetchJSON(url, ms) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms || 9000);
+    return fetch(url, { signal: ctrl.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .finally(() => clearTimeout(timer));
+  }
+
+  function fetchViaProxy(target, ms) {
+    return Promise.any(PROXIES.map((p) => fetchText(p(target), ms)));
+  }
+
+  /* ================= 数据源 ================= */
+
+  async function fromMojeek(q) {
+    const target = "https://www.mojeek.com/search?q=" + encodeURIComponent(q);
+    const html = await fetchViaProxy(target, 10000);
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const out = [];
+    doc.querySelectorAll("ul.results-standard > li").forEach((el) => {
+      if (out.length >= 10) return;
+      const a = el.querySelector("h2 a") || el.querySelector("a.ob");
+      if (!a) return;
+      const href = a.getAttribute("href") || "";
+      if (!/^https?:\/\//.test(href)) return;
+      const title = a.textContent.trim();
+      if (!title) return;
+      const p = el.querySelector("p.s") || el.querySelector("p");
+      let desc = p ? p.textContent.trim() : "";
+      if (desc.length > 280) desc = desc.slice(0, 280) + "…";
+      out.push({ title: title, url: href, desc: desc });
+    });
+    return out;
+  }
+
+  async function fromBrave(q) {
+    const target = "https://search.brave.com/search?q=" + encodeURIComponent(q);
+    const html = await fetchViaProxy(target, 10000);
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const out = [];
+    doc.querySelectorAll("div.snippet").forEach((el) => {
+      if (out.length >= 10) return;
+      const a = el.querySelector('a[href^="http"]');
+      if (!a) return;
+      const href = a.getAttribute("href");
+      if (!href) return;
+      const titleEl = el.querySelector(".title, .snippet-title, h3, .heading-serpresult");
+      const title = (titleEl ? titleEl.textContent : a.textContent).trim();
+      if (!title) return;
+      const descEl = el.querySelector(".snippet-description, .snippet-content");
+      let desc = descEl ? descEl.textContent.trim() : "";
+      if (desc.length > 280) desc = desc.slice(0, 280) + "…";
+      out.push({ title: title, url: href, desc: desc });
+    });
+    return out;
+  }
+
+  function fromWiki(lang, q) {
+    const url =
+      "https://" + lang + ".wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*" +
+      "&srlimit=6&srsearch=" + encodeURIComponent(q);
+    return fetchJSON(url).then((d) => {
+      const list = (d && d.query && d.query.search) || [];
+      return list.map((it) => ({
+        title: it.title,
+        url: "https://" + lang + ".wikipedia.org/wiki/" + encodeURIComponent(it.title.replace(/ /g, "_")),
+        desc: strip(it.snippet)
+      }));
+    });
+  }
+
+  function fromDDG(q) {
+    const url =
+      "https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=" +
+      encodeURIComponent(q);
+    return fetchJSON(url).then((d) => {
+      const out = [];
+      if (d.AbstractText && d.AbstractURL) {
+        out.push({
+          title: d.Heading || "即时答案",
+          url: d.AbstractURL,
+          desc: d.AbstractText
+        });
+      }
+      const walk = (arr) => (arr || []).forEach((t) => {
+        if (t.Topics) return walk(t.Topics);
+        if (t.Text && t.FirstURL) {
+          const parts = t.Text.split(" - ");
+          out.push({
+            title: parts.length > 1 ? parts[0] : t.Text.slice(0, 60),
+            url: t.FirstURL,
+            desc: t.Text
+          });
+        }
+      });
+      walk(d.RelatedTopics);
+      return out;
+    });
+  }
+
+  function fromHN(q) {
+    const url =
+      "https://hn.algolia.com/api/v1/search?tags=story&hitsPerPage=8&query=" +
+      encodeURIComponent(q);
+    return fetchJSON(url).then((d) =>
+      (d.hits || []).map((h) => {
+        const u = h.url || ("https://news.ycombinator.com/item?id=" + h.objectID);
+        let desc = h.story_text ? strip(h.story_text) : "";
+        if (!desc) {
+          const bits = [];
+          if (h.author) bits.push("作者 " + h.author);
+          if (h.points != null) bits.push(h.points + " 分");
+          desc = bits.join(" · ");
+        }
+        return { title: h.title || h.story_title || "", url: u, desc: desc };
+      }).filter((x) => x.title)
+    );
+  }
+
+  function fromOpenLibrary(q) {
+    const url = "https://openlibrary.org/search.json?limit=6&q=" + encodeURIComponent(q);
+    return fetchJSON(url).then((d) =>
+      (d.docs || []).map((b) => {
+        const authors = (b.author_name || []).slice(0, 2).join("、");
+        const year = b.first_publish_year ? "首版 " + b.first_publish_year : "";
+        const desc = [authors ? "作者 " + authors : "", year].filter(Boolean).join(" · ");
+        return {
+          title: b.title || "",
+          url: b.key ? "https://openlibrary.org" + b.key : "",
+          desc: desc
+        };
+      }).filter((x) => x.title && x.url)
+    );
+  }
+
+  /* ================= 渲染 ================= */
+
+  function skeleton(n) {
+    let html = "";
+    for (let i = 0; i < n; i++) html += "<div class='sk'><i></i><i></i><i></i></div>";
+    return html;
+  }
+
+  function render(list) {
+    resultsEl.innerHTML = list.map((it) => {
+      const url = esc(it.url);
+      let host = "";
+      try { host = new URL(it.url).hostname.replace(/^www\./, ""); } catch (e) {}
+      return (
+        "<a class='result' href='" + url + "' target='_blank' rel='noopener noreferrer'>" +
+          "<div class='title'>" + esc(it.title || "无标题") + "</div>" +
+          (host ? "<div class='url'>" + esc(host) + "</div>" : "") +
+          (it.desc ? "<div class='desc'>" + esc(it.desc) + "</div>" : "") +
+        "</a>"
+      );
+    }).join("");
+  }
+
+  /* ================= 主流程 ================= */
+
+  let reqId = 0;
+
+  async function runSearch(rawQ) {
+    const q = (rawQ || "").trim();
+    if (!q) return;
+    const myId = ++reqId;
+
+    inputEl.value = q;
+    document.title = q + " - 轻搜";
+    history.replaceState(null, "", "?q=" + encodeURIComponent(q));
+
+    resultsEl.innerHTML = skeleton(6);
+    statEl.textContent = "正在搜索…";
+
+    const tasks = [
+      fromMojeek(q),
+      fromBrave(q),
+      fromWiki("zh", q),
+      fromWiki("en", q),
+      fromDDG(q),
+      fromHN(q),
+      fromOpenLibrary(q)
+    ];
+
+    const settled = await Promise.allSettled(tasks);
+    if (myId !== reqId) return;
+
+    let all = [];
+    let ok = 0;
+
+    settled.forEach((r) => {
+      if (r.status === "fulfilled" && Array.isArray(r.value)) {
+        ok++;
+        all = all.concat(r.value);
+      }
+    });
+
+    const seen = new Set();
+    all = all.filter((it) => {
+      const key = (it.url || "").replace(/\/+$/, "").toLowerCase();
+      if (!key || key === "#" || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 30);
+
+    if (ok === 0 || all.length === 0) {
+      statEl.textContent = "";
+      resultsEl.innerHTML =
+        "<div class='empty'>暂时没有获取到结果，请稍后再试或更换关键词。</div>";
+      return;
+    }
+
+    statEl.textContent = "找到 " + all.length + " 条结果";
+    render(all);
+  }
+
+  /* ================= 事件 ================= */
+
+  $("#form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    runSearch(inputEl.value);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "/" && document.activeElement !== inputEl) {
+      e.preventDefault();
+      inputEl.focus();
+      inputEl.select();
+    }
+  });
+
+  const initQ = new URLSearchParams(location.search).get("q");
+  if (initQ) runSearch(initQ);
+  else inputEl.focus();
+})();
+</script>
+</body>
+</html>
